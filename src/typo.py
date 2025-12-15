@@ -1,5 +1,6 @@
 from yarl import URL
-from typing import NamedTuple, List, Tuple
+from typing import NamedTuple, List
+from pathlib import Path
 
 class ResultReturned(NamedTuple):
     name: str
@@ -10,4 +11,6 @@ class FinalResult(NamedTuple):
     original_title: str
     duration: str
     synopsis: str
+    score: float
+    image_path: Path
     genres: List[str]

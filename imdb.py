@@ -1,10 +1,12 @@
 from src.typo import ResultReturned, FinalResult
 from src.exceptions import TagNotFound
+from src.functions import find_image, download_img, fix_url
 from requests.sessions import Session
 from requests.exceptions import ConnectionError, ConnectTimeout
 from bs4 import BeautifulSoup, Tag
 from yarl import URL
 from typing import List, Tuple
+from pathlib import Path
 
 class IMDB:
     def __init__(self):
@@ -28,10 +30,8 @@ class IMDB:
             
             new_links = [
                 ResultReturned(
-                    name=res.text, 
-                    url=URL(
-                        f"{self.url}/{'/'.join(res.get("href").split("/")[2:])}"
-                        )
+                    name=res.text,
+                    url=fix_url(self.url, res.get("href")) 
                     ) 
                 for res in results]
             
@@ -117,59 +117,99 @@ class IMDB:
     
     @staticmethod
     def _genres(main_section: Tag) -> List[str]:
-        div = IMDB._get_second_info_div(main_section)
+        try:
+            div = IMDB._get_second_info_div(main_section)
+            
+            if not (genre_scroller := div.find_next("div", attrs={"class": "ipc-chip-list__scroller"})):
+                raise TagNotFound("div.ipc-chip-list__scroller")
+            
+            genres = genre_scroller.find_all_next("a", attrs={"class": "ipc-chip ipc-chip--on-baseAlt", "tabindex": "0", "aria-disabled": "false"})
         
-        if not (genre_scroller := div.find_next("div", attrs={"class": "ipc-chip-list__scroller"})):
-            raise TagNotFound("div.ipc-chip-list__scroller")
+            return [gen.text for gen in genres]
+        except AttributeError as error:
+            raise TagNotFound(f"Tag no encontrado: {error}")
         
-        genres = genre_scroller.find_all_next("a", attrs={"class": "ipc-chip ipc-chip--on-baseAlt", "tabindex": "0", "aria-disabled": "false"})
+    @staticmethod
+    def _stars(main_section: Tag) -> float:
+        try:
+            if not (div := main_section.find_next("div", attrs={"class": "sc-8e956c5c-0 cfWEab sc-af040695-1 jppKBB"})):
+                raise TagNotFound("div.sc-8e956c5c-0 cfWEab sc-af040695-1 jppKBB")
+            
+            if not (stars_div := div.find_next("div", attrs={"class": "sc-9d3bc82f-3 kZxGGs"})):
+                raise TagNotFound("div.sc-9d3bc82f-3 kZxGGs")
+            
+            if not (punctuation := stars_div.find_next("div", attrs={"class": "sc-4dc495c1-2 jaffDQ"})):
+                raise TagNotFound("div.sc-4dc495c1-2 jaffDQ")
+            
+            if not (score := punctuation.find_next("span")):
+                raise TagNotFound("span")
+            
+            return score.text.replace(",", ".") if "," in score.text else score.text
+        except AttributeError as error:
+            raise TagNotFound(f"Tag no encontrado: {error}")
     
-        return [gen.text for gen in genres]
-    
+    def _image(self, main_section: Tag, path: str = "./") -> Path:
+        try:
+            if not (div := main_section.find_next("div", attrs={"class": "sc-14a487d5-5 eVZFsr"})):
+                raise TagNotFound("div.sc-14a487d5-5 eVZFsr")
+            
+            if not (poster_div := div.find_next("div", attrs={"class": "ipc-poster ipc-poster--baseAlt ipc-poster--media-radius ipc-poster--wl-true ipc-poster--dynamic-width ipc-sub-grid-item ipc-sub-grid-item--span-2"})):
+                raise TagNotFound("div.ipc-poster ipc-poster--baseAlt ipc-poster--media-radius ipc-poster--wl-true ipc-poster--dynamic-width ipc-sub-grid-item ipc-sub-grid-item--span-2")
+            
+            image_a = poster_div.find_next("a")
+            
+            image_url = fix_url(self.url, image_a.get("href"))
+        
+            response = self.session.get(image_url, headers=self.user_agent)
+            
+            image = find_image(response)
+            
+            path = download_img(image.get("alt"), image.get("src"), path=path)
+            
+            return path
+        
+        except AttributeError as error:
+            raise TagNotFound(f"Tag no encontrado: {error}")
+        
     def get_info(self, url: URL) -> FinalResult:
-        
         try:
             response = self.session.get(url, headers=self.user_agent, timeout=25)
-            
             soup = BeautifulSoup(response.text, "html.parser")
-            
-            main_section = soup.find("section", attrs={"class": "ipc-page-section ipc-page-section--baseAlt ipc-page-section--tp-none ipc-page-section--bp-xs sc-14a487d5-2 kmEeUD"})
-            
+
+            main_section = soup.find(
+                "section",
+                attrs={
+                    "class": "ipc-page-section ipc-page-section--baseAlt "
+                            "ipc-page-section--tp-none ipc-page-section--bp-xs "
+                            "sc-14a487d5-2 kmEeUD"
+                },
+            )
+
             title, original_title = IMDB._titles(main_section)
             duration = IMDB._episode_duration(main_section)
-            
             synopsis = IMDB._synopsis(main_section)
             genres = IMDB._genres(main_section)
-            
+            score = IMDB._stars(main_section)
+            image_path = self._image(main_section)
+
             return FinalResult(
                 title=title,
                 original_title=original_title,
                 duration=duration,
                 synopsis=synopsis,
-                genres=genres
+                score=score,
+                image_path=image_path,
+                genres=genres,
             )
-            
-        
+
         except (ConnectionError, ConnectTimeout) as error:
             raise RuntimeError(f"Error de conexion: {error}")
-        
+
+        except TagNotFound as error:
+            raise
+
         except Exception as e:
             raise Exception(f"Error inesperado: {e}")
-        
+
         finally:
             self.session.close()
-    
-
-def main():
-    
-    url = "https://www.imdb.com/es-es"
-    
-    i = IMDB()
-    
-    result = i.search("Avatar la leyenda de Aang")
-    
-    url = result[0].url
-    print(i.get_info(url))
-
-if __name__ == "__main__":
-    main()
